@@ -1,5 +1,6 @@
 import os
 import argparse
+import gc
 import torch
 import torch.nn as nn
 import pandas as pd
@@ -12,6 +13,8 @@ from collections import OrderedDict
 from chexbert_datasets.unlabeled_dataset import UnlabeledDataset
 from constants import *
 from tqdm import tqdm
+
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 def collate_fn_no_labels(sample_list):
     """Custom collate function to pad reports in each batch to the max len,
@@ -59,58 +62,70 @@ def label(checkpoint_path, csv_path, filename="data.pt", logits=False): # TODO: 
 
     @returns y_pred (List[List[int]]): Labels for each of the 14 conditions, per report
     """
-    ld = load_unlabeled_data(csv_path)
-
-    model = bert_encoder(logits)
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    if torch.cuda.device_count() > 0: #works even if only 1 GPU available
-        print("Using", torch.cuda.device_count(), "GPUs!")
-        model = nn.DataParallel(model) #to utilize multiple GPU's
-        model = model.to(device)
-        checkpoint = torch.load(checkpoint_path)
-        model.load_state_dict(checkpoint['model_state_dict'])
-    else:
-        checkpoint = torch.load(checkpoint_path, map_location=torch.device('cpu'))
-        new_state_dict = OrderedDict()
-        for k, v in checkpoint['model_state_dict'].items():
-            name = k[7:] # remove `module.`
-            new_state_dict[name] = v
-        model.load_state_dict(new_state_dict)
-
-    was_training = model.training
-    model.eval()
-    y_pred = [[] for _ in range(len(CONDITIONS))]
+    ld = None
+    model = None
+    checkpoint = None
     rep = {}
+    try:
+        ld = load_unlabeled_data(csv_path)
 
-    print("\nBegin report impression labeling. The progress bar counts the # of batches completed:")
-    print("The batch size is %d" % BATCH_SIZE)
-    with torch.no_grad():
-        for i, data in enumerate(tqdm(ld)):
-            batch = data['imp'] #(batch_size, max_len)
-            batch = batch.to(device)
-            src_len = data['len']
-            batch_size = batch.shape[0]
-            attn_mask = utils.generate_attention_masks(batch, src_len, device)
+        model = bert_encoder(logits)
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        if torch.cuda.device_count() > 0: #works even if only 1 GPU available
+            print("Using", torch.cuda.device_count(), "GPUs!")
+            model = nn.DataParallel(model) #to utilize multiple GPU's
+            model = model.to(device)
+            checkpoint = torch.load(checkpoint_path)
+            model.load_state_dict(checkpoint['model_state_dict'])
+        else:
+            checkpoint = torch.load(checkpoint_path, map_location=torch.device('cpu'))
+            new_state_dict = OrderedDict()
+            for k, v in checkpoint['model_state_dict'].items():
+                name = k[7:] # remove `module.`
+                new_state_dict[name] = v
+            model.load_state_dict(new_state_dict)
 
-            out = model(batch, attn_mask)
+        was_training = model.training
+        model.eval()
+        y_pred = [[] for _ in range(len(CONDITIONS))]
 
-            if logits:
-                for idx, j in zip(data['idx'], range(len(data['idx']))):
-                    rep[idx] = [torch.softmax(out[k][j], dim=0)[0].item() for k in range(len(out))]
-            else:
-                for idx, j in zip(data['idx'], range(len(out))):
-                    rep[idx] = out[j].to('cpu')
-                    #curr_y_pred = out[j].argmax(dim=1) #shape is (batch_size)
-                    #y_pred[j].append(curr_y_pred)
+        print("\nBegin report impression labeling. The progress bar counts the # of batches completed:")
+        print("The batch size is %d" % BATCH_SIZE)
+        with torch.no_grad():
+            for i, data in enumerate(tqdm(ld)):
+                batch = data['imp'] #(batch_size, max_len)
+                batch = batch.to(device)
+                src_len = data['len']
+                batch_size = batch.shape[0]
+                attn_mask = utils.generate_attention_masks(batch, src_len, device)
 
-        if i % 1000 == 0:
-            torch.save(rep, filename) #torch.save(rep, 'data.pt') # TODO: CHECK WITH VISH
-        #for j in range(len(y_pred)):
-        #    y_pred[j] = torch.cat(y_pred[j], dim=0)
+                out = model(batch, attn_mask)
 
-    #if was_training:
-    #    model.train()
-    torch.save(rep, filename) #torch.save(rep, 'data.pt') # TODO: CHECK WITH VISH
+                if logits:
+                    for idx, j in zip(data['idx'], range(len(data['idx']))):
+                        rep[idx] = [torch.softmax(out[k][j], dim=0)[0].item() for k in range(len(out))]
+                else:
+                    for idx, j in zip(data['idx'], range(len(out))):
+                        rep[idx] = out[j].to('cpu')
+                        #curr_y_pred = out[j].argmax(dim=1) #shape is (batch_size)
+                        #y_pred[j].append(curr_y_pred)
+
+            if i % 1000 == 0:
+                torch.save(rep, filename) #torch.save(rep, 'data.pt') # TODO: CHECK WITH VISH
+            #for j in range(len(y_pred)):
+            #    y_pred[j] = torch.cat(y_pred[j], dim=0)
+
+        #if was_training:
+        #    model.train()
+        torch.save(rep, filename) #torch.save(rep, 'data.pt') # TODO: CHECK WITH VISH
+    finally:
+        del ld
+        del model
+        del checkpoint
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Label a csv file containing radiology reports')
