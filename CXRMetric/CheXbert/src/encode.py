@@ -72,8 +72,7 @@ def label(checkpoint_path, csv_path, filename="data.pt", logits=False): # TODO: 
         model = bert_encoder(logits)
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         if torch.cuda.device_count() > 0: #works even if only 1 GPU available
-            print("Using", torch.cuda.device_count(), "GPUs!")
-            model = nn.DataParallel(model) #to utilize multiple GPU's
+            print("Using single GPU for CheXbert inference:", device)
             model = model.to(device)
             checkpoint = torch.load(checkpoint_path)
             model.load_state_dict(checkpoint['model_state_dict'])
