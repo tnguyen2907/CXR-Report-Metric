@@ -16,6 +16,17 @@ from tqdm import tqdm
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
+
+def _strip_module_prefix(state_dict):
+    """Normalize DataParallel checkpoints for single-GPU or CPU loading."""
+    if not any(k.startswith("module.") for k in state_dict):
+        return state_dict
+
+    new_state_dict = OrderedDict()
+    for k, v in state_dict.items():
+        new_state_dict[k[7:] if k.startswith("module.") else k] = v
+    return new_state_dict
+
 def collate_fn_no_labels(sample_list):
     """Custom collate function to pad reports in each batch to the max len,
        where the reports have no associated labels
@@ -75,14 +86,10 @@ def label(checkpoint_path, csv_path, filename="data.pt", logits=False): # TODO: 
             print("Using single GPU for CheXbert inference:", device)
             model = model.to(device)
             checkpoint = torch.load(checkpoint_path)
-            model.load_state_dict(checkpoint['model_state_dict'])
+            model.load_state_dict(_strip_module_prefix(checkpoint['model_state_dict']))
         else:
             checkpoint = torch.load(checkpoint_path, map_location=torch.device('cpu'))
-            new_state_dict = OrderedDict()
-            for k, v in checkpoint['model_state_dict'].items():
-                name = k[7:] # remove `module.`
-                new_state_dict[name] = v
-            model.load_state_dict(new_state_dict)
+            model.load_state_dict(_strip_module_prefix(checkpoint['model_state_dict']))
 
         was_training = model.training
         model.eval()
