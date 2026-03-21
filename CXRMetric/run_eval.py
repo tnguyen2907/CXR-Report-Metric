@@ -7,6 +7,8 @@ import pandas as pd
 import pickle
 import torch
 
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 from bert_score import BERTScorer
 from fast_bleu import BLEU
 from radgraph import RadGraph
